@@ -1,0 +1,1134 @@
+#include <QApplication>
+#include <QThread>
+#include <QMutex>
+
+#include <QColor>
+#include <QLabel>
+#include <QtDebug>
+#include <QPushButton>
+#include <QCloseEvent>
+
+#include "LeptonThread.h"
+#include "FileThread.h"
+#include "MyLabel.h"
+#include "LEPTON_CONFIG.h"
+
+
+
+#include <QAbstractButton>
+#include <QLineEdit>
+#include <QDebug>
+#include <QSlider>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QPainter>
+#include <QPen>
+#include <QGridLayout>
+#include <QMetaType>
+
+
+#include <QProcess>
+
+#include <ctime>
+#include <stdint.h>
+#include <cstdio> // For popen()
+#include <thread>
+#include <string>
+#include <iostream>
+
+#include <wiringPi.h>
+
+
+
+/* we subclass from QWidget class to handle de closure of the program with 
+ * the X buttton.
+ * we name the subclass MyWidget and when we create our main widget is 
+ * necesary to set MyWidget as parent
+*/
+
+class MyWidget : public QWidget {
+public:
+    MyWidget(QWidget *parent = nullptr) : QWidget(parent) {}
+
+protected:
+    // Override the close event
+    void closeEvent(QCloseEvent *event) override {
+	QString Dir =  QString("/home/Thermal_Camera/AI_Temps.csv");
+	QFile file(Dir); 
+	if(!file.exists()){
+     if (!file.remove()) {}
+	}
+	event->accept();}
+    
+ /* we create a personal slot and variable to save the image recieve from the sensor
+  * */   
+//public slots:
+	//void TestLabel(QImage image){TempsImage=image;}
+//public:
+	//QImage TempsImage;
+};
+
+/*
+ * we have 2 main clases to handle the information
+ * 	LeptonThread: this class handle all the function to save image,
+ * 			video and handle the information recieve from
+ * 			the sensor, all in 1 Thread.
+ * 	FileThread: this clas handle the file where the image is store and 
+ *			launch de AI in another thread.
+ */
+LeptonThread *thread = new LeptonThread();
+FileThread *file = new FileThread();
+
+/*	Variables for sensor configuration
+ * The sensor has his libraries from FLIR and in every library is defined
+ * an specific variable type for every function and for every configuration
+ * needed
+ * NOTE: IT IS VERY IMPORTANT TO CHECK THE LIBRARY TO SEE WHAT TYPE OF 
+ * VARIABLE IS NEEDED BECAUSE IT CAN BE POINTER OR NOT. 
+ */
+//Variables for config
+LEP_RAD_FLUX_LINEAR_PARAMS_T Radiometry;
+LEP_SYS_GAIN_MODE_OBJ_T gainModeObj;
+LEP_AGC_ROI_T agcROI; 
+LEP_UINT16 agcHeqClipLimitHigh;
+LEP_UINT16 agcHeqDampingFactor;
+LEP_UINT16 agcHeqLinearPercent;
+
+
+
+void printUsage(char *cmd) {
+        char *cmdname = basename(cmd);
+	printf("Usage: %s [OPTION]...\n"
+               " -h      display this help and exit\n"
+               " -cm x   select colormap\n"
+               "           1 : rainbow\n"
+               "           2 : grayscale\n"
+               "           3 : ironblack [default]\n"
+               " -tl x   select type of Lepton\n"
+               "           2 : Lepton 2.x [default]\n"
+               "           3 : Lepton 3.x\n"
+               "               [for your reference] Please use nice command\n"
+               "                 e.g. sudo nice -n 0 ./%s -tl 3\n"
+               " -ss x   SPI bus speed [MHz] (10 - 30)\n"
+               "           20 : 20MHz [default]\n"
+               " -min x  override minimum value for scaling (0 - 65535)\n"
+               "           [default] automatic scaling range adjustment\n"
+               "           e.g. -min 30000\n"
+               " -max x  override maximum value for scaling (0 - 65535)\n"
+               "           [default] automatic scaling range adjustment\n"
+               "           e.g. -max 32000\n"
+               " -d x    log level (0-255)\n"
+               "", cmdname, cmdname);
+	return;
+}
+
+
+int main( int argc, char **argv )
+////////////////////////////////////////////////////////////////////////
+////////////////////////// Main window /////////////////////////////////
+////////////////////////////////////////////////////////////////////////
+
+{
+                                                 
+	
+/* With the  file object we set he location where the file with the image will be stored,
+ * and then we check if the folder where everything is goib to be stored exists. if not,
+ * we creat it with admin privilege and set the writing permission needed, this is because 
+ * we create a folder in a protected area. 
+ * 
+ */
+	// folder for AI
+	file->setFile();
+	QString folderPath = "/home/Thermal_Camera";
+	QDir dir(folderPath);
+	if (!dir.exists()) {
+		//because the folder doesn't exists we creat it
+		// Run the shell command to create the folder with sudo
+		QString command = "sudo mkdir -p " + folderPath;
+
+		// Create a QProcess to run the shell command
+		// QProcess write commands to the shell
+		QProcess process;
+		process.start(command);
+		process.waitForFinished(-1); // Wait for the process to finish
+
+		// Check the exit code of the process
+		int exitCode = process.exitCode();
+		if (exitCode != 0) {
+		qDebug() << "Failed to create folder for AI Exit code:" << exitCode;
+		// Handle error
+		} else {
+		qDebug() << "Folder created for AI successfully!";
+		// Continue with your application 
+		}
+		
+		//now we change the permissions to allow the write.
+		command = "sudo chmod  a+rw /home/Thermal_Camera" ;
+		//QProcess to run the shell command
+		process.start(command);
+		process.waitForFinished(-1); // Wait for the process to finish
+
+		// Check the exit code of the process
+		exitCode = process.exitCode();
+		if (exitCode != 0) {
+		qDebug() << "Writing permission denied" << exitCode;
+		// Handle error
+		} else {
+		qDebug() << "Writing permission granted";
+		// Continue with your application 
+		}
+	}
+	
+	
+	/* Now we do the same with another folder where the patients photos
+	 * will be stored.
+	 */
+	folderPath = "/home/Thermal_Camera/patients";
+	dir.setPath(folderPath);
+	if (!dir.exists()) {
+		// Run the shell command to create the folder with sudo
+		QString command = "sudo mkdir -p " + folderPath;
+
+		// Create a QProcess to run the shell command
+		QProcess process;
+		process.start(command);
+		process.waitForFinished(-1); // Wait for the process to finish
+
+		// Check the exit code of the process
+		int exitCode = process.exitCode();
+		if (exitCode != 0) {
+		qDebug() << "Failed to create folder for patients Exit code:" << exitCode;
+		// Handle error
+		} else {
+		qDebug() << "Folder created for patients successfully!";
+		// Continue with your application
+		}
+		command = "sudo chmod  a+rw /home/Thermal_Camera/patients" ;
+		//QProcess to run the shell command
+		process.start(command);
+		process.waitForFinished(-1); // Wait for the process to finish
+
+		// Check the exit code of the process
+		exitCode = process.exitCode();
+		if (exitCode != 0) {
+		qDebug() << "Writing permission denied" << exitCode;
+		// Handle error
+		} else {
+		qDebug() << "Writing permission granted";
+		// Continue with your application 
+		}
+		
+	}
+
+	/* we declare the initial configuration of the sensor
+	 * 
+	 * NOTE: THE ONLY VARIABLES THAT CAN BE CHANGE ARE COLORMAP AND TYPE LEPTON
+	 */
+	int typeColormap=1;// colormap_ironblack
+	int typeLepton = 3; // Lepton 2.x
+	int spiSpeed = 20; // SPI bus speed 20MHz
+	int rangeMin = -1; //
+	int rangeMax = -1; //
+	int loglevel = 0;
+	
+	/* the program has 2 sliders and this are their initial value;
+	 */
+	uint16_t Temp[2] = {290, 420};
+	
+	
+	// VARIABLES FOR CONFIGURATION
+	bool Adv=false;
+	int basicConfig[4];
+	
+	//Inicializacion de Variables para configuracion
+	basicConfig[0]=0;
+	basicConfig[1]=0;
+	basicConfig[2]=0;
+	basicConfig[3]=0;
+	
+	//Obtenemos los valores iniciales de las configuraciones internas
+	LEP_GetRadParms(&Radiometry);
+	LEP_GetGainConfig(&gainModeObj);
+	LEP_GetAGCConfig(&agcROI, &agcHeqClipLimitHigh, &agcHeqDampingFactor, &agcHeqLinearPercent);
+	
+	// NO MOVER NADA A ESTE CICLO FOR NI LOS IF, NO SE QUE HACEN Y  NO COMPILA SIN ELLOS
+	for(int i=1; i < argc; i++) {
+		if (strcmp(argv[i], "-h") == 0) {
+			printUsage(argv[0]);
+			exit(0);
+		}
+		else if (strcmp(argv[i], "-d") == 0) {
+			int val = 3;
+			if ((i + 1 != argc) && (strncmp(argv[i + 1], "-", 1) != 0)) {
+				val = std::atoi(argv[i + 1]);
+				i++;
+			}
+			if (0 <= val) {
+				loglevel = val & 0xFF;
+			}
+		}
+		else if ((strcmp(argv[i], "-cm") == 0) && (i + 1 != argc)) {
+			int val = std::atoi(argv[i + 1]);
+			if ((val == 1) || (val == 2)) {
+				typeColormap = val;
+				i++;
+			}
+		}
+		else if ((strcmp(argv[i], "-tl") == 0) && (i + 1 != argc)) {
+			int val = std::atoi(argv[i + 1]);
+			if (val == 3) {
+				typeLepton = val;
+				i++;
+			}
+		}
+		else if ((strcmp(argv[i], "-ss") == 0) && (i + 1 != argc)) {
+			int val = std::atoi(argv[i + 1]);
+			if ((10 <= val) && (val <= 30)) {
+				spiSpeed = val;
+				i++;
+			}
+		}
+		else if ((strcmp(argv[i], "-min") == 0) && (i + 1 != argc)) {
+			int val = std::atoi(argv[i + 1]);
+			if ((0 <= val) && (val <= 65535)) {
+				rangeMin = val;
+				i++;
+			}
+		}
+		else if ((strcmp(argv[i], "-max") == 0) && (i + 1 != argc)) {
+			int val = std::atoi(argv[i + 1]);
+			if ((0 <= val) && (val <= 65535)) {
+				rangeMax = val;
+				i++;
+			}
+		}
+	}
+	
+
+	//create the app
+	QApplication a( argc, argv );
+	
+/////////////////////// /////////////////////// /////////////////////// 	
+/////////////////////// Main Window ///////////////////////////////////
+/////////////////////// /////////////////////// /////////////////////// 
+	MyWidget *myWidget = new MyWidget;
+	myWidget->setGeometry(0, 0, 840, 610);
+	
+/////////////////////// /////////////////////// ////////////////////////	
+///////////////////////// Config Window ////////////////////////////////
+/////////////////////// /////////////////////// ////////////////////////
+	QWidget *configWidget = new QWidget;
+	configWidget->setGeometry(200, 150, 260, 300);
+
+/////////////////////// /////////////////////// ////////////////////////	
+///////////////////////// Adanced Config Window ////////////////////////
+/////////////////////// /////////////////////// ////////////////////////	
+	QTabWidget *advConfigWidget = new QTabWidget;
+	advConfigWidget->setGeometry(200, 150, 450, 300);
+
+/////////////////////// /////////////////////// ////////////////////////	
+
+		
+	//create an image placeholder for myLabel
+	//fill the top left corner with red
+	QImage myImage;
+	myImage = QImage(160*4, 120*4, QImage::Format_RGB888);
+	QRgb red = qRgb(255,0,0);
+	for(int i=0;i<80;i++) {
+		for(int j=0;j<60;j++) {
+			myImage.setPixel(i, j, red);
+		}
+	}
+	
+	
+	//create a label, and set it's image to the placeholder
+	MyLabel myLabel(myWidget);
+	myLabel.setGeometry(10, 10, 160*4, 120*4);
+	myLabel.setPixmap(QPixmap::fromImage(myImage));
+
+//Creation of buttons for main window
+	//create a FFC button
+	QPushButton *button1 = new QPushButton("Perform FFC", myWidget);
+	button1->setGeometry(680, 135, 100, 30);
+	
+	//Create button for photos
+	QPushButton *button2 = new QPushButton("Photo", myWidget);
+	button2->setGeometry(680, 170, 100, 30);
+	
+	//Create a video buttons 
+	QPushButton *button3 = new QPushButton("Video",myWidget);
+	button3->setGeometry(680, 205, 100, 30);
+	button3->setCheckable(true);
+	
+	// create button to take certain number of shots in a certain period
+	QPushButton *button4 = new QPushButton("Timed",myWidget);
+	button4->setGeometry(680, 240, 100, 30);
+	//Create a timer to trigger the photo at certain period
+	QTimer *timer = new QTimer(myWidget);
+	
+	
+	//Create AI button
+	QPushButton *AI = new QPushButton("Track", myWidget);
+	AI->setGeometry(680, 275, 100, 30);
+	AI->setCheckable(true);
+	//Create a timer to trigger the photo at certain period
+	QTimer *AI_timer = new QTimer(myWidget);
+	
+	//Create a button to send the parameters from the main to the object thread
+	QPushButton *button5 = new QPushButton(myWidget);
+	button5->setGeometry(230,530, 100, 50);
+	button5->setText("Parameters");
+	
+	//Create open config button
+	QPushButton *config = new QPushButton("Config", myWidget);
+	config->setGeometry(680, 310, 100, 30);
+
+
+//CheckBoxes for the main window
+	QCheckBox *autoRange = new QCheckBox("Auto Range",myWidget);
+    autoRange->setChecked(true); // Set the initial state (checked)
+    autoRange->setGeometry(680, 105, 110, 30);
+	
+	QCheckBox *Advanced = new QCheckBox("Advanced",myWidget);
+    Advanced->setChecked(false); // Set the initial state (checked)
+    Advanced->setGeometry(680, 345, 110, 30);
+
+//text box name, framees and time, main Window
+	//Create text box to intriduce the name
+	QLineEdit *Nombre = new QLineEdit(myWidget);
+	Nombre->setStyleSheet("QLineEdit { width: 250px; height: 20px; }");
+	Nombre->move(80,500);
+	//label for the text box or the name
+	QLabel *Name = new QLabel("Name: ",myWidget);
+	Name->setGeometry(20,500,50,20);
+	
+	//Create text box for frame number and set it to 0
+	QLineEdit *Cuadros = new QLineEdit(myWidget);
+	Cuadros->setStyleSheet("QLineEdit { width: 100px; height: 20px; }");
+	Cuadros->move(80,530);
+	Cuadros->setText("0");
+	//label for the text box for frames
+	QLabel *Frames = new QLabel("Frames:",myWidget);
+	Frames->setGeometry(10,530,60,20);
+	
+	//Create the textbox to introduce the period
+	QLineEdit *Tiempo = new QLineEdit(myWidget); 
+	Tiempo->setStyleSheet("QLineEdit { width: 100px; height: 20px; }");
+	Tiempo->move(80,560);
+	Tiempo->setText("0");
+	//label for the text box for the period
+	QLabel *Time = new QLabel("Time: ",myWidget);
+	Time->setGeometry(20,560,50,20);
+	
+
+	
+//Sliders Main Window
+	QSlider *sliderMin = new QSlider(Qt::Vertical,myWidget);
+	QSlider *sliderMax = new QSlider(Qt::Vertical,myWidget);
+	
+	sliderMin->setRange(0, 1400);
+	sliderMax->setRange(0, 1400);
+	
+	sliderMin->setValue(Temp[0]);
+	sliderMax->setValue(Temp[1]);
+	
+	sliderMin->setStyleSheet(
+		"QSlider::groove:vertical {"
+		"	border: 1px solid #bbb;"
+		"	background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 red, stop:1 blue);"
+		//"	backgroung: transparent;"
+		"	width: 10px;"
+		"	border-radius: 5px;"
+		"}"
+		"QSlider::handle:vertical {"
+		"	background: white;"
+		"	border: 1px solid #777;"
+		"	height: 20px;"
+		"	margin: 0 -5px;"
+		"	border-radius: 10px;"
+		"	backgroung: transparent;"
+		"}"
+	);
+	sliderMax->setStyleSheet(
+		"QSlider::groove:vertical {"
+		"	border: 1px solid #bbb;"
+		"	background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 red, stop:1 blue);"
+		//"	backgroung: transparent;"
+		"	width: 10px;"
+		"	border-radius: 5px;"
+		"}"
+		"QSlider::handle:vertical {"
+		"	background: white;"
+		"	border: 1px solid #777;"
+		"	height: 20px;"
+		"	margin: 0 -5px;"
+		"	border-radius: 10px;"
+		"}"
+	);
+	
+	//Slider step coniguration
+	sliderMin->setTickInterval(10);
+	sliderMin->setTickPosition(QSlider::TicksLeft);
+	sliderMin->setSingleStep(10);
+	sliderMax->setTickInterval(10);
+	sliderMax->setTickPosition(QSlider::TicksLeft);
+	sliderMax->setSingleStep(10);
+	//Sliders position
+	sliderMin->setGeometry(680, 10, 30, 100);
+	sliderMax->setGeometry(750, 10, 30, 100);
+	
+	//Slider label for temps
+	QLabel *tempMin = new QLabel("",myWidget);
+	tempMin->setText("Scale\n min:\n"+QString::number(Temp[0]*10));
+	tempMin->setGeometry(705, 10, 50, 70);
+	
+	QLabel *tempMax = new QLabel("",myWidget);
+	tempMax->setText("Scale\n max:\n"+QString::number(Temp[1]*10));
+	tempMax->setGeometry(775, 10, 50, 70);
+
+	
+
+	//create a thread to gather SPI data and initilize the sensor
+	//when the thread emits updateImage, the label should update its image accordingly
+	thread->setLogLevel(loglevel);
+	thread->useColormap(typeColormap);
+	thread->useLepton(typeLepton);
+	thread->useSpiSpeedMhz(spiSpeed);
+	thread->setAutomaticScalingRange();
+	
+	//set the autorange
+	if (0 <= rangeMin) thread->useRangeMinValue(rangeMin);
+	if (0 <= rangeMax) thread->useRangeMaxValue(rangeMax);
+	
+	
+	
+
+	//Connect sensor image to the main window andt show it  setImage
+		QObject::connect(thread, SIGNAL(updateImage(QImage)), &myLabel, SLOT(setImage(QImage)));
+
+	//QObject::connect(thread, &LeptonThread::updateImage, myWidget, &MyWidget::TestLabel);
+	//QObject::connect(thread, &LeptonThread::updateImage, [&](){
+		//if(!myWidget->TempsImage.isNull())
+	//	myLabel.setPixmap(QPixmap::fromImage(myWidget->TempsImage.scaled(myLabel.width(),myLabel.height(),Qt::KeepAspectRatio)));
+	//	});
+	
+	//Conncet AI button to start the image file csv saving and astart the AI
+	QObject::connect(AI, SIGNAL(clicked()), thread, SLOT(startAI()));
+	QObject::connect(AI, SIGNAL(clicked()), file, SLOT(GetImage()));
+	
+	
+	/*Connect AI timer to update the Bounding Box every 100ms
+	 * if the timer is set then stop or if is stop then start
+	 * And change pythonAI state to start or finish the AI code
+	 */
+	QObject::connect(AI, &QPushButton::clicked, [&](){	
+		if (AI_timer->isActive()){
+			
+			AI_timer->stop();
+		} else {
+			AI_timer->setInterval(100);
+			AI_timer->start();
+		}
+		file->pythonAI=!(file->pythonAI);
+	});
+	
+	//send image to the file object to save it in a csv file for python to read
+	QObject::connect(thread, SIGNAL(infereImage(QVector<int>)), file, SLOT(saveMatrix(QVector<int>)));
+	
+
+
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////
+// //////////////////////////////////////////////////////////////////////////////////////////////////////////
+
+	// connect parameter button to start the timed photos
+	QObject::connect(button4, &QPushButton::clicked, [&](){
+		timer->start((thread->Time)*1000);
+		thread->Timed();
+
+		QString Count = QString::number((thread->Frames));
+		Cuadros->setText(Count);
+	});
+	// connect ffc button to the thread's ffc action
+	QObject::connect(button1, SIGNAL(clicked()), thread, SLOT(performFFC()));
+	
+	// connect photo button with the thread's photo action
+	QObject::connect(button2, SIGNAL(clicked()), thread, SLOT(Photo()));
+	
+	// connect video button with the thread's video action
+	QObject::connect(button3, SIGNAL(clicked()), thread, SLOT(Video()));
+
+	//Connect timed buttoon to start the timer and take the first photo
+	QObject::connect(button4, &QPushButton::clicked, [&](){
+		timer->start((thread->Time)*1000);
+				thread->Timed();
+
+		QString Count = QString::number((thread->Frames));
+		Cuadros->setText(Count);
+	});	
+	
+	//Connect timerout flag with the textbox to finish the timer
+	//when  all the frames were taken
+	QObject::connect(timer, &QTimer::timeout, [&](){
+		QString Count = QString::number((thread->Frames)-1);
+		Cuadros->setText(Count);
+		if((thread->Frames)<=1) timer->stop();
+	});	
+	
+	//Connect same timeout flag to the photo saver function
+	QObject::connect(timer, SIGNAL(timeout()), thread, SLOT(Timed()));
+	
+    //Connect button to send the parameters to the sensor object and
+	//verify information
+	QObject::connect(button5, &QPushButton::clicked, [&](){	
+		if (thread->Datos(Nombre->text(),Cuadros->text().toUInt(), Tiempo->text().toUInt()))
+			QMessageBox::information(nullptr,"Information","Correct");
+		else QMessageBox::critical(nullptr,"Error","Invalid Name");
+		timer->stop();
+		});
+		
+	//Connect button to open Config Window or the Advance Config Window
+	QObject::connect(config, &QPushButton::clicked, [&](){
+		if(!Adv) configWidget->show();
+		else advConfigWidget->show();
+	});	
+		
+//Trigger configuration of checkboxes for Main Window
+	//Trigerconfigurtion for autorange
+	QObject::connect(autoRange, &QCheckBox::stateChanged, [&](bool state) {
+        if (state) {
+            //setAutorange
+            thread->setAutomaticScalingRange();
+		if (0 <= rangeMin) thread->useRangeMinValue(rangeMin);
+		if (0 <= rangeMax) thread->useRangeMaxValue(rangeMax);
+        } else {
+			// Set manual Range
+            thread->useRangeMinValue(Temp[0]);
+            thread->useRangeMaxValue(Temp[1]);
+        }
+    });
+    
+    
+    QObject::connect(Advanced, &QCheckBox::stateChanged, [&](bool state) {
+        if (state) Adv=state;
+		else Adv=state;
+    });
+    
+    
+
+//Trigger configuration of sliders for Main Window
+	QObject::connect(sliderMin, &QSlider::valueChanged, [&](uint16_t value) {
+		autoRange->setChecked(false);
+		Temp[0] = value;
+		if(basicConfig[0]==0) tempMin->setText("Scale\n min:\n"+QString::number(Temp[0]*10));
+		else if(basicConfig[0]== 1) tempMin->setText("Temp\n min:\n"+QString::number(Temp[0]/10));
+		else tempMin->setText("scale\n min:\n"+QString::number(Temp[0]/10*255/140));
+		thread->useRangeMinValue(Temp[0]);
+		thread->useRangeMaxValue(Temp[1]);
+	});
+	
+	QObject::connect(sliderMax, &QSlider::valueChanged, [&](uint16_t value) {
+		autoRange->setChecked(false);
+		Temp[1] = value;
+		if(basicConfig[0]==0) tempMax->setText("Scale\n max:\n"+QString::number(Temp[1]*10));
+		else if(basicConfig[0]== 1) tempMax->setText("Temp\n max:\n"+QString::number(Temp[1]/10));
+		else tempMax->setText("scale\n max:\n"+QString::number(Temp[1]/10*255/140));
+		thread->useRangeMinValue(Temp[0]);
+		thread->useRangeMaxValue(Temp[1]);
+	});
+
+	
+////////////////////////////////////////////////////////////////////////
+//////////////////////////basic config window///////////////////////////
+////////////////////////////////////////////////////////////////////////
+	
+//Creation of button for Config Window
+	//Create a button to send the config parameters
+	QPushButton *ConfigAccept = new QPushButton("Accept", configWidget);
+	ConfigAccept->setGeometry(65, 260, 60, 30);
+	
+	//Create a button to close the config window
+	QPushButton *configClose = new QPushButton("Close", configWidget);
+	configClose->setGeometry(135, 260, 60, 30);
+	
+	//Create a menu button to select coor map
+	QComboBox *colorMap=new QComboBox(configWidget);
+	colorMap->setGeometry(150,10,100,20);
+	colorMap->addItem("Rainbow");
+	colorMap->addItem("Grayscale");
+	colorMap->addItem("Ironblack");
+	colorMap->setCurrentIndex(typeColormap-1);
+	//label for menu popup colormap
+	QLabel *Colors = new QLabel("ColorMap:",configWidget);
+	Colors->setGeometry(10,10,100,20);
+	
+	//Create a menu button to select format output
+	QComboBox *formOut=new QComboBox(configWidget);
+	formOut->setGeometry(150,40,100,20);
+	formOut->addItem("Raw 14");
+	formOut->addItem("Raw 16-K");
+	formOut->addItem("AGC");
+	formOut->setCurrentIndex(0);
+	//label for menu popup Format
+	QLabel *formOutLabel = new QLabel("Format Out:",configWidget);
+	formOutLabel->setGeometry(10,40,100,20);
+	
+	//Create a menu button to select ACG format
+	QComboBox *agcFormat=new QComboBox(configWidget);
+	agcFormat->setGeometry(150,70,100,20);
+	agcFormat->addItem("Linear");
+	agcFormat->addItem("HEQ");
+	agcFormat->addItem("");
+	agcFormat->setCurrentIndex(2);
+	//label for menu popup AGC format
+	QLabel *agcFormatLabel = new QLabel("AGC Format:",configWidget);
+	agcFormatLabel->setGeometry(10,70,100,20);
+	
+	//Create a menu button to select gain
+	QComboBox *Gain=new QComboBox(configWidget);
+	Gain->setGeometry(150,100,100,20);
+	Gain->addItem("High");
+	Gain->addItem("Low");
+	Gain->addItem("Auto");
+	Gain->setCurrentIndex(0);
+	//label for menu popup AGC format
+	QLabel *gainLabel = new QLabel("Gain:",configWidget);
+	gainLabel->setGeometry(10,100,100,20);
+	
+	//Create a menu button to select shutter
+	QComboBox *Shutter=new QComboBox(configWidget);
+	Shutter->setGeometry(150,130,100,20);
+	Shutter->addItem("Manual");
+	Shutter->addItem("Auto");
+	Shutter->setCurrentIndex(0);
+	//label for menu popup AGC format
+	QLabel *shutterLabel = new QLabel("Shutter:",configWidget);
+	shutterLabel->setGeometry(10,130,100,20);
+
+	
+	
+//text boxes or configuration of the sensor main Window
+	//Create text box to intriduce the name
+	QLineEdit *emiBox = new QLineEdit(configWidget);
+	emiBox->setStyleSheet("QLineEdit { width: 100px; height: 20px; }");
+	emiBox->move(150,160);
+	float emissivity =Radiometry.sceneEmissivity/8192.0;
+	emiBox->setText(QString::number(emissivity));
+	//label for the text box or the name
+	QLabel *emiLabel = new QLabel("Emissivity:",configWidget);
+	emiLabel->setGeometry(10,160,80,20);
+
+//Trigger configuration of buttons for Config Window	
+	//Connect button to open Config Window
+	QObject::connect(ConfigAccept, &QPushButton::clicked, [&](){
+		QMessageBox::information(nullptr,"Information","Correct");
+		//set Colormap
+		thread->useColormap(typeColormap);
+		
+		//set Format output
+		LEP_SetOutputFormat(basicConfig[0]);
+		thread->useOutputFormat(basicConfig[0]);
+		if(basicConfig[0]==2){
+			sliderMin->setValue(0);
+			sliderMax->setValue(1400);
+			thread->useRangeMinValue(0);
+			thread->useRangeMaxValue(1400);
+		}
+		else{
+			//update temps for different output value
+			thread->useRangeMinValue(Temp[0]);
+			thread->useRangeMaxValue(Temp[1]);
+			
+		}
+
+		//set AGC format	
+		if(basicConfig[0]==2) LEP_SetAGCEqu(basicConfig[1]);
+			
+		//set Gain Mode
+		LEP_SetGainMode(basicConfig[2]);	
+		
+		//set Shutter
+		LEP_SetShutter(basicConfig[3]);
+		
+		//set emissivity
+		emissivity=emiBox->text().toFloat();
+		LEP_SetEmissivity(Radiometry, emissivity);
+		
+		//update range scale
+		if(basicConfig[0]==0) tempMax->setText("Scale\n max:\n"+QString::number(Temp[1]*10));
+		else if(basicConfig[0]== 1) tempMax->setText("Temp\n max:\n"+QString::number(Temp[1]/10));
+		else tempMax->setText("scale\n max:\n"+QString::number(Temp[1]/10*255/140));
+		
+		if(basicConfig[0]==0) tempMin->setText("Scale\n min:\n"+QString::number(Temp[0]*10));
+		else if(basicConfig[0]== 1) tempMin->setText("Temp\n min:\n"+QString::number(Temp[0]/10));
+		else tempMin->setText("scale\n min:\n"+QString::number(Temp[0]/10*255/140));
+		
+	});	
+	
+	//Connect button for the colormap menu
+    QObject::connect(colorMap, QOverload<int>::of(&QComboBox::currentIndexChanged), [&](int index) {
+		typeColormap = index + 1;
+    });
+    
+    //Connect button for format
+	QObject::connect(formOut, QOverload<int>::of(&QComboBox::currentIndexChanged), [&](int index) {
+		basicConfig[0]=index;
+		if(index<=1) agcFormat->setCurrentIndex(2);
+		else agcFormat->setCurrentIndex(0);
+    });
+  
+  
+	//Connect button for AGC
+    QObject::connect(agcFormat, QOverload<int>::of(&QComboBox::currentIndexChanged), [&](int index) {
+		basicConfig[1]=index;
+		if(index!=2)formOut->setCurrentIndex(2);
+    });
+
+	//Connect button for Shutter
+	QObject::connect(Gain, QOverload<int>::of(&QComboBox::currentIndexChanged), [&](int index) {
+		basicConfig[2]=index;
+    });
+  
+	//Connet button for Gain
+	QObject::connect(Shutter, QOverload<int>::of(&QComboBox::currentIndexChanged), [&](int index) {
+		basicConfig[3]=index;
+    });
+	
+	
+	
+	//Connect button to close Config Window
+	QObject::connect(configClose, &QPushButton::clicked, [&](){
+		configWidget->close();
+	});	
+
+////////////////////////////////////////////////////////////////////////
+//////////////////////////Advanced Cconfig window///////////////////////
+////////////////////////////////////////////////////////////////////////
+	
+	// Create widgets for each tab
+    QWidget *gainTab = new QWidget(advConfigWidget);
+    QWidget *emissivityTab = new QWidget(advConfigWidget);
+    QWidget *agcTab = new QWidget(advConfigWidget);
+    
+	// Add tabs to the tab widget
+    advConfigWidget->addTab(gainTab, "Gain");
+    advConfigWidget->addTab(emissivityTab, "Emissivity");
+    advConfigWidget->addTab(agcTab, "AGC");
+    
+    
+   
+////////////////////////////// GAIN tab///////////////////////////
+	
+	 // Create a layout for the main widget
+    QGridLayout *layout_GAIN = new QGridLayout(gainTab);
+	// Create a container for QLineEdit objects and labels
+    QVector<QLineEdit*> lineEdits_GAIN;
+    QVector<QLabel*> labels_GAIN;
+
+    // Create 8 QLineEdits with labels
+    for (int i = 0; i < 8; ++i) {
+        QLabel *label = new QLabel("Label " + QString::number(i + 1));
+        QLineEdit *lineEdit = new QLineEdit;
+
+        // Add label and line edit to the grid layout
+        layout_GAIN->addWidget(label, (i % 4) * 2, i / 4 );
+        layout_GAIN->addWidget(lineEdit, (i % 4) * 2 + 1, i / 4);
+
+        // Add the QLineEdit to the container
+        lineEdits_GAIN.append(lineEdit);
+        labels_GAIN.append(label);
+    }
+    //change name of labels and values of boxes
+    labels_GAIN[0]->setText("Start Column"); 
+    labels_GAIN[1]->setText("Start Row");
+    labels_GAIN[2]->setText("L_H Threshold");
+    labels_GAIN[3]->setText("L_H Poblation");
+    labels_GAIN[4]->setText("End Column");
+    labels_GAIN[5]->setText("End Row");
+    labels_GAIN[6]->setText("H_L Threshold");
+    labels_GAIN[7]->setText("H_L Poblation"); 
+    
+    lineEdits_GAIN[0]->setText(QString::number(gainModeObj.sysGainModeROI.startCol)); 
+    lineEdits_GAIN[1]->setText(QString::number(gainModeObj.sysGainModeROI.startRow));
+    lineEdits_GAIN[2]->setText(QString::number(gainModeObj.sysGainModeThresholds.sys_C_low_to_high));
+    lineEdits_GAIN[3]->setText(QString::number(gainModeObj.sysGainModeThresholds.sys_P_low_to_high));
+    lineEdits_GAIN[4]->setText(QString::number(gainModeObj.sysGainModeROI.endCol));
+    lineEdits_GAIN[5]->setText(QString::number(gainModeObj.sysGainModeROI.endRow));
+    lineEdits_GAIN[6]->setText(QString::number(gainModeObj.sysGainModeThresholds.sys_C_high_to_low));
+    lineEdits_GAIN[7]->setText(QString::number(gainModeObj.sysGainModeThresholds.sys_P_high_to_low)); 
+    
+    // Create a QPushButton to extract information
+    QPushButton *advAccept = new QPushButton("Accept");
+    QPushButton *advClose = new QPushButton("Close");
+	// Add QPushButton to extract information to the tab
+    layout_GAIN->addWidget(advAccept, 9, 0, 2, 1); 
+    layout_GAIN->addWidget(advClose, 9, 1, 2, 2); 
+    
+////////////////////////////// Emissivity tab///////////////////////////
+	
+	 // Create a layout for the main widget
+	QGridLayout *layout_Emiss = new QGridLayout(emissivityTab);
+	// Create a container for QLineEdit objects
+	QVector<QLineEdit*> lineEdits_Emiss;
+	QVector<QLabel*> labels_Emiss;
+
+
+    // Create 8 QLineEdits with labels
+    for (int i = 0; i < 8; ++i) {
+        QLabel *label = new QLabel("Label " + QString::number(i + 1));
+        QLineEdit *lineEdit = new QLineEdit;
+
+        // Add label and line edit to the grid layout
+        layout_Emiss->addWidget(label, (i % 4) * 2, i / 4 );
+        layout_Emiss->addWidget(lineEdit, (i % 4) * 2 + 1, i / 4);
+
+        // Add the QLineEdit to the container
+        lineEdits_Emiss.append(lineEdit);
+	labels_Emiss.append(label);
+    }
+        //change name of labels
+    labels_Emiss[0]->setText("Emissivity");
+    labels_Emiss[1]->setText("Background Temperature");
+    labels_Emiss[2]->setText("Atmospheric Transmision");
+    labels_Emiss[3]->setText("Atmospheric Temperature");
+    labels_Emiss[4]->setText("Window Transmission");
+    labels_Emiss[5]->setText("Window Reflection");
+    labels_Emiss[6]->setText("Window Temperature");
+    labels_Emiss[7]->setText("Window Reflected Temperature");   
+    
+    lineEdits_Emiss[0]->setText(QString::number(Radiometry.sceneEmissivity/8192.0)); 
+    lineEdits_Emiss[1]->setText(QString::number(Radiometry.TBkgK/100.0));
+    lineEdits_Emiss[2]->setText(QString::number(Radiometry.tauWindow/8192.0));
+    lineEdits_Emiss[3]->setText(QString::number(Radiometry.TAtmK/100.0));
+    lineEdits_Emiss[4]->setText(QString::number(Radiometry.tauWindow/8192.0));
+    lineEdits_Emiss[5]->setText(QString::number(Radiometry.reflWindow/8192.0));
+    lineEdits_Emiss[6]->setText(QString::number(Radiometry.TWindowK/100.0));
+    lineEdits_Emiss[7]->setText(QString::number(Radiometry.TReflK/100.0)); 
+    
+    // Create a QPushButton to extract information
+    QPushButton *advAccept1 = new QPushButton("Accept");
+    QPushButton *advClose1 = new QPushButton("Close");
+	// Add QPushButton to extract information to the tab
+    layout_Emiss->addWidget(advAccept1, 9, 0, 2, 1); // Span 4 columns
+    layout_Emiss->addWidget(advClose1, 9, 1, 2, 1); // Span 4 columns
+    
+////////////////////////////// AGC tab///////////////////////////
+	
+	 // Create a layout for the main widget
+    QGridLayout *layout_AGC = new QGridLayout(agcTab);
+	// Create a container for QLineEdit objects
+    QVector<QLineEdit*> lineEdits_ACG;
+    QVector<QLabel*> labels_AGC;
+
+    // Create 8 QLineEdits with labels
+    for (int i = 0; i < 7; ++i) {
+        QLabel *label = new QLabel("Label " + QString::number(i + 1));
+        QLineEdit *lineEdit = new QLineEdit;
+
+        // Add label and line edit to the grid layout
+        layout_AGC->addWidget(label, (i % 4) * 2, i / 4 );
+        layout_AGC->addWidget(lineEdit, (i % 4) * 2 + 1, i / 4);
+
+        // Add the QLineEdit to the container
+        lineEdits_ACG.append(lineEdit);
+	labels_AGC.append(label);
+    }
+	//change name of labels
+    labels_AGC[0]->setText("Start Column");
+    labels_AGC[1]->setText("Start Row");
+    labels_AGC[2]->setText("Clip Limit High");
+    labels_AGC[3]->setText("Dampening Factor ");
+    labels_AGC[4]->setText("End Column");
+    labels_AGC[5]->setText("End Row");
+    labels_AGC[6]->setText("Linear Percent");
+    
+    lineEdits_ACG[0]->setText(QString::number(agcROI.startCol)); 
+    lineEdits_ACG[1]->setText(QString::number(agcROI.startRow));
+    lineEdits_ACG[2]->setText(QString::number(agcHeqClipLimitHigh));
+    lineEdits_ACG[3]->setText(QString::number(agcHeqDampingFactor));
+    lineEdits_ACG[4]->setText(QString::number(agcROI.endCol));
+    lineEdits_ACG[5]->setText(QString::number(agcROI.endRow));
+    lineEdits_ACG[6]->setText(QString::number(agcHeqLinearPercent));
+    // Create a QPushButton to extract information
+    QPushButton *advAccept2 = new QPushButton("Accept");
+    QPushButton *advClose2 = new QPushButton("Close");
+	// Add QPushButton to extract information to the tab
+    layout_AGC->addWidget(advAccept2, 9, 0, 2, 1); 
+    layout_AGC->addWidget(advClose2, 9, 1, 2, 1); 
+
+
+///////////////////////link action adv Config///////////////////////////
+
+    // Connect the button to a slot to extract information gain
+	QObject::connect(advAccept, &QPushButton::clicked, [&lineEdits_GAIN,&lineEdits_Emiss,&lineEdits_ACG]{
+		//set GAIN
+		gainModeObj.sysGainModeROI.startCol = lineEdits_GAIN[0]->text().toUInt();
+		gainModeObj.sysGainModeROI.startRow = lineEdits_GAIN[1]->text().toUInt();
+		gainModeObj.sysGainModeThresholds.sys_C_low_to_high = lineEdits_GAIN[2]->text().toUInt();
+		gainModeObj.sysGainModeThresholds.sys_P_low_to_high = lineEdits_GAIN[3]->text().toUInt();
+		gainModeObj.sysGainModeROI.endCol = lineEdits_GAIN[4]->text().toUInt();
+		gainModeObj.sysGainModeROI.endRow = lineEdits_GAIN[5]->text().toUInt();
+		gainModeObj.sysGainModeThresholds.sys_C_high_to_low = lineEdits_GAIN[6]->text().toUInt();
+		gainModeObj.sysGainModeThresholds.sys_P_high_to_low = lineEdits_GAIN[7]->text().toUInt();
+		gainModeObj.sysGainModeThresholds.sys_T_high_to_low = lineEdits_GAIN[6]->text().toFloat() + 273;
+		gainModeObj.sysGainModeThresholds.sys_T_low_to_high = lineEdits_GAIN[2]->text().toFloat() + 273;
+
+		LEP_SetGainConfig(gainModeObj);
+		
+		
+		//set Radiometry Params
+		Radiometry.sceneEmissivity = lineEdits_Emiss[0]->text().toFloat()*8192.0; 
+		Radiometry.TBkgK = lineEdits_Emiss[1]->text().toFloat()*100.0;
+		Radiometry.tauWindow = lineEdits_Emiss[2]->text().toFloat()*8192.0;
+		Radiometry.TAtmK = lineEdits_Emiss[3]->text().toFloat()*100.0;
+		Radiometry.tauWindow = lineEdits_Emiss[4]->text().toFloat()*8192.0;
+		Radiometry.reflWindow = lineEdits_Emiss[5]->text().toFloat()*8192.0;
+		Radiometry.TWindowK = lineEdits_Emiss[6]->text().toFloat()*100.0;
+		Radiometry.TReflK = lineEdits_Emiss[7]->text().toFloat()*100.0; 
+		
+		LEP_SetRadParms(Radiometry);
+		
+		
+		//Set AGC
+		agcROI.startCol = lineEdits_ACG[0]->text().toUInt();
+		agcROI.startRow =lineEdits_ACG[1]->text().toUInt();
+		agcHeqClipLimitHigh = lineEdits_ACG[2]->text().toUInt();
+		agcHeqDampingFactor = lineEdits_ACG[3]->text().toUInt();
+		agcROI.endCol = lineEdits_ACG[4]->text().toUInt();
+		agcROI.endRow = lineEdits_ACG[5]->text().toUInt();
+		agcHeqLinearPercent = lineEdits_ACG[6]->text().toUInt();
+		
+		LEP_SetAGCConfig(agcROI, agcHeqClipLimitHigh, agcHeqDampingFactor, agcHeqLinearPercent);
+
+	QMessageBox::information(nullptr,"Information","Correct");
+	});
+    
+
+        QObject::connect(advAccept1, &QPushButton::clicked, [=]() {
+		advAccept->clicked();});
+	QObject::connect(advAccept2, &QPushButton::clicked, [&]() {
+		advAccept->clicked();});
+
+    	//Connect button to close adv Window gain
+	QObject::connect(advClose, &QPushButton::clicked, [&](){
+		advConfigWidget->close();
+	});	
+	
+		//Connect button to close adv Window emiss
+	QObject::connect(advClose1, &QPushButton::clicked, [&](){
+		advConfigWidget->close();
+	});	
+	
+		//Connect button to close adv Window agc
+	QObject::connect(advClose2, &QPushButton::clicked, [&](){
+		advConfigWidget->close();
+	});	
+	
+
+	
+	// ROI
+		QImage ROI;
+		ROI = QImage(320*2, 240*2, QImage::Format_ARGB32);
+		ROI.fill(Qt::transparent);
+		
+		QPainter painter(&ROI);
+		painter.setPen(QPen(Qt::black,3));
+		int x1 = 69*4;
+		int y1 = 49*4;
+		int x2 = 89*4;
+		int y2 = 69*4;
+
+		// Draw the line
+		painter.drawLine(x1, y1, x2, y1);
+		painter.drawLine(x1, y1, x1, y2);
+		painter.drawLine(x1, y2, x2, y2);
+		painter.drawLine(x2, y1, x2, y2);
+		painter.drawImage(0,0,ROI);
+	
+		// End painting
+		painter.end();
+		QLabel myLabel1(myWidget);
+		myLabel1.setGeometry(10, 10, 330*2, 240*2);
+		myLabel1.setPixmap(QPixmap::fromImage(ROI));
+		
+		//define array to guard boun box
+		int array[8];
+		for(int i=0;i<8;i++){array[i]=0;}
+		int buff=0;
+    
+	// Define the coordinates of the line
+	QObject::connect(AI_timer,  &QTimer::timeout, [&](){
+			
+		// Specify the CSV file path
+		QString csvFilePath = "/home/Thermal_Camera/output.csv";
+
+		// Open the CSV file
+		QFile fileBBox(csvFilePath);
+		if (!fileBBox.open(QIODevice::ReadOnly | QIODevice::Text)) {
+		//qDebug() << "Error: Unable to open the file for reading.";
+		}
+
+		   // Create a QTextStream object to read from the file
+		QTextStream in(&fileBBox);
+		QString line;
+		for(int i=0;i<8;i++){array[i]=0;}
+		buff=0;
+		// Read and output each line of the file
+		while (!in.atEnd()) {
+			line = in.readLine();
+			 // Split the QString into a QStringList using spaces as the delimiter
+			QStringList numbersList = line.split(" ");
+			for (const QString& number : numbersList) {
+				//qDebug() << number.toInt(); // Convert QString to int and output
+				array[buff]=number.toInt();
+				//qDebug()<<array[buff];
+				buff++;
+			}
+		}
+		// Close the file
+		fileBBox.close();
+		thread->setBBox(array);
+		QImage ROI;
+		ROI = QImage(320*2, 240*2, QImage::Format_ARGB32);
+		ROI.fill(Qt::transparent);
+		
+		QPainter painter(&ROI);
+		painter.setPen(QPen(Qt::white,3));
+		for( int i=0;i<8;i+=4)
+		{painter.drawRect(array[i]*4,array[i+1]*4,(array[i+2]-array[i])*4,(array[i+3]-array[i+1])*4);}
+		
+
+		// End painting
+		painter.end();
+		myLabel1.setPixmap(QPixmap::fromImage(ROI));
+		//thread->Set_NROI(x1/4,x2/4,y1/4,y2/4);
+		
+		
+	});	
+	
+	
+	
+////////////////////////// ////////////////////////// //////////////////	
+////////////////////////// init congig ////////////// //////////////////
+////////////////////////// ////////////////////////// //////////////////
+	//set Format output
+	LEP_SetOutputFormat(0);
+	thread->useOutputFormat(0);
+			
+	//set Gain Mode
+	LEP_SetGainMode(0);	
+		
+	//set Shutter
+	LEP_SetShutter(0);
+
+	
+	
+
+	
+	
+	thread->start();
+	file->start();
+	myWidget->show();
+	
+	return a.exec();
+}
